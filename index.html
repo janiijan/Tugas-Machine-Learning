@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prediksi Customer Churn</title>
+<script src="https://cdn.jsdelivr.net/npm/vue@3.4.38/dist/vue.global.prod.js"></script>
+<style>
+  *{box-sizing:border-box}
+  body{font-family:system-ui,Segoe UI,Arial,sans-serif;background:#f3f5f9;margin:0;color:#1f2933}
+  header{background:#14284b;color:#fff;padding:22px 24px}
+  header h1{margin:0;font-size:24px}
+  header p{margin:4px 0 0;color:#b8c7e6;font-size:14px}
+  .wrap{max-width:960px;margin:20px auto;padding:0 16px 40px}
+  .card{background:#fff;border-radius:12px;padding:22px;box-shadow:0 2px 8px rgba(0,0,0,.07);margin-bottom:18px}
+  h2{font-size:16px;margin:0 0 14px;color:#14284b}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:14px}
+  label{display:block;font-size:13px;font-weight:600;margin-bottom:4px}
+  select,input{width:100%;padding:8px 10px;border:1px solid #cbd2d9;border-radius:8px;font-size:14px;background:#fff}
+  .row{display:flex;gap:10px;flex-wrap:wrap;margin-top:20px;align-items:center}
+  button{padding:11px 22px;border:0;border-radius:8px;font-size:15px;cursor:pointer}
+  .primary{background:#2563eb;color:#fff;font-size:16px;padding:12px 30px}
+  .primary:disabled{background:#94a3b8;cursor:wait}
+  .ghost{background:#e8edf5;color:#14284b}
+  .result{margin-top:20px;padding:20px;border-radius:12px}
+  .bad{background:#fdecea;border:1px solid #f5b5af}
+  .good{background:#e8f6ee;border:1px solid #a7dcbd}
+  .bar{height:16px;background:#e4e7eb;border-radius:8px;overflow:hidden;margin:10px 0}
+  .bar div{height:100%;transition:width .4s}
+  .err{margin-top:16px;color:#b42318}
+  .info{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+  .info div{background:#eef2f9;border-radius:8px;padding:12px;text-align:center}
+  .info b{display:block;font-size:20px;color:#2563eb}
+  .info span{font-size:12px;color:#52606d}
+  footer{text-align:center;color:#7b8794;font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Prediksi Customer Churn</h1>
+  <p>Tugas Besar Machine Learning | Model: Random Forest (hasil tuning)</p>
+</header>
+
+<div id="app" class="wrap">
+  <div class="card">
+    <h2>Data Pelanggan</h2>
+    <div class="grid">
+      <div v-for="f in fields" :key="f.key">
+        <label>{{ f.label }}</label>
+        <select v-if="f.options" v-model="form[f.key]">
+          <option v-for="o in f.options" :key="o[0]" :value="o[0]">{{ o[1] }}</option>
+        </select>
+        <input v-else type="number" min="0" step="any" v-model.number="form[f.key]">
+      </div>
+    </div>
+
+    <div class="row">
+      <button class="primary" @click="predict" :disabled="loading">{{ loading ? 'Memproses...' : 'Prediksi' }}</button>
+      <button class="ghost" @click="fill(high)">Contoh risiko tinggi</button>
+      <button class="ghost" @click="fill(low)">Contoh risiko rendah</button>
+    </div>
+    <div v-if="error" class="err">{{ error }}</div>
+
+    <div v-if="result" class="result" :class="result.churn_probability >= 0.5 ? 'bad' : 'good'">
+      <strong style="font-size:20px">Hasil: {{ result.prediction }}</strong>
+      <div class="bar"><div :style="{width: pct + '%', background: result.churn_probability >= 0.5 ? '#d9534f' : '#2f9e62'}"></div></div>
+      <div>Probabilitas churn: <strong>{{ pct }}%</strong></div>
+      <p style="margin-bottom:0">{{ advice }}</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Tentang Model</h2>
+    <div class="info">
+      <div><b>0,638</b><span>F1-score churn</span></div>
+      <div><b>0,778</b><span>Recall churn</span></div>
+      <div><b>0,844</b><span>ROC-AUC</span></div>
+      <div><b>Good fit</b><span>Selisih Train-Test F1 0,055</span></div>
+    </div>
+    <p style="font-size:13px;color:#52606d;margin-bottom:0">
+      Random Forest (300 pohon, max_depth 15, min_samples_leaf 10) dipilih dari 5 algoritma setelah GridSearchCV.
+      Faktor yang paling berpengaruh: kontrak bulanan, lama berlangganan (tenure), total tagihan, dan tidak adanya Online Security.
+    </p>
+  </div>
+  <footer>Dataset: Telco Customer Churn (Kaggle)</footer>
+</div>
+
+<script>
+// Jika dibuka lewat server (http://127.0.0.1:8000) pakai alamat relatif; jika file dibuka langsung, arahkan ke server lokal
+const API_URL = location.protocol === "file:" ? "http://127.0.0.1:8000/predict" : "/predict";
+const yn = [["Yes","Ya"],["No","Tidak"]];
+const ynNo = (s) => [["Yes","Ya"],["No","Tidak"],[s,"Tidak ada layanan"]];
+
+const fields = [
+  {key:"gender", label:"Jenis Kelamin", options:[["Female","Perempuan"],["Male","Laki-laki"]]},
+  {key:"SeniorCitizen", label:"Lansia (Senior Citizen)", options:[[0,"Tidak"],[1,"Ya"]]},
+  {key:"Partner", label:"Punya Pasangan", options:yn},
+  {key:"Dependents", label:"Punya Tanggungan", options:yn},
+  {key:"tenure", label:"Lama Berlangganan (bulan)"},
+  {key:"PhoneService", label:"Layanan Telepon", options:yn},
+  {key:"MultipleLines", label:"Banyak Jalur Telepon", options:ynNo("No phone service")},
+  {key:"InternetService", label:"Layanan Internet", options:[["DSL","DSL"],["Fiber optic","Fiber optic"],["No","Tidak ada"]]},
+  {key:"OnlineSecurity", label:"Online Security", options:ynNo("No internet service")},
+  {key:"OnlineBackup", label:"Online Backup", options:ynNo("No internet service")},
+  {key:"DeviceProtection", label:"Device Protection", options:ynNo("No internet service")},
+  {key:"TechSupport", label:"Tech Support", options:ynNo("No internet service")},
+  {key:"StreamingTV", label:"Streaming TV", options:ynNo("No internet service")},
+  {key:"StreamingMovies", label:"Streaming Movies", options:ynNo("No internet service")},
+  {key:"Contract", label:"Jenis Kontrak", options:[["Month-to-month","Bulanan"],["One year","1 tahun"],["Two year","2 tahun"]]},
+  {key:"PaperlessBilling", label:"Tagihan Tanpa Kertas", options:yn},
+  {key:"PaymentMethod", label:"Metode Pembayaran", options:[
+    ["Electronic check","Electronic check"],["Mailed check","Mailed check"],
+    ["Bank transfer (automatic)","Bank transfer (otomatis)"],["Credit card (automatic)","Credit card (otomatis)"]]},
+  {key:"MonthlyCharges", label:"Tagihan Bulanan ($)"},
+  {key:"TotalCharges", label:"Total Tagihan ($)"},
+];
+
+const high = {
+  gender:"Female", SeniorCitizen:0, Partner:"No", Dependents:"No", tenure:3,
+  PhoneService:"Yes", MultipleLines:"No", InternetService:"Fiber optic",
+  OnlineSecurity:"No", OnlineBackup:"No", DeviceProtection:"No", TechSupport:"No",
+  StreamingTV:"No", StreamingMovies:"No", Contract:"Month-to-month",
+  PaperlessBilling:"Yes", PaymentMethod:"Electronic check",
+  MonthlyCharges:80.5, TotalCharges:241.5
+};
+const low = {
+  ...high, tenure:60, Contract:"Two year", InternetService:"DSL",
+  OnlineSecurity:"Yes", TechSupport:"Yes", PaymentMethod:"Bank transfer (automatic)",
+  MonthlyCharges:55, TotalCharges:3300
+};
+
+Vue.createApp({
+  data() {
+    return { fields, high, low, form: {...high}, loading:false, result:null, error:"" };
+  },
+  computed: {
+    pct() { return this.result ? (this.result.churn_probability * 100).toFixed(1) : 0; },
+    advice() {
+      return this.result.churn_probability >= 0.5
+        ? "Pelanggan berisiko tinggi. Sarankan tim marketing memberi promo retensi atau tawaran kontrak jangka panjang."
+        : "Pelanggan berisiko rendah. Cukup pertahankan kualitas layanan.";
+    }
+  },
+  methods: {
+    fill(preset) { this.form = {...preset}; this.result = null; this.error = ""; },
+    async predict() {
+      this.loading = true; this.error = ""; this.result = null;
+      try {
+        const res = await fetch(API_URL, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(this.form)
+        });
+        if (!res.ok) throw new Error("Server membalas status " + res.status);
+        this.result = await res.json();
+      } catch (e) {
+        this.error = "Gagal menghubungi API. Pastikan aplikasi sedang berjalan (uvicorn app:app --reload). (" + e.message + ")";
+      } finally {
+        this.loading = false;
+      }
+    }
+  }
+}).mount("#app");
+</script>
+</body>
+</html>
